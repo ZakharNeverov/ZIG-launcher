@@ -19,16 +19,23 @@ pub const Dimentions = struct {
 //     }
 // }
 
-pub fn getUserBinaries(binfolder: std.fs.Dir, filesList: *std.ArrayList([]const u8), PAllocator: std.mem.Allocator) anyerror!void {
+pub fn getUserBinaries(
+    binfolder: std.fs.Dir,
+    filesList: *std.ArrayList([:0]const u8),
+    PAllocator: std.mem.Allocator,
+) anyerror!void {
     var it = binfolder.iterate();
-    const buf2 = try PAllocator.alloc(u8, 4096);
     loop: {
         while (it.next()) |entry| {
             if (entry) |e| {
                 if (e.kind == std.fs.File.Kind.file) {
                     // TODO: refactor without
-                    std.log.info("found file: {s} typeof: {any}\n", .{ e.name, @typeName(@TypeOf(e.name)) });
-                    const res = try std.fmt.bufPrint(buf2, "{s}", .{e.name});
+                    std.log.info("found file: {s} typeof: {any}\n", .{
+                        e.name,
+                        @typeName(@TypeOf(e.name)),
+                    });
+                    const buf2 = try PAllocator.alloc(u8, 4096);
+                    const res = try std.fmt.bufPrintZ(buf2, "{s}", .{e.name});
                     try filesList.append(res);
                     // std.log.debug("len: {any}", .{res.len});
                 }
@@ -56,10 +63,12 @@ pub fn main() !void {
     try stdout.print("Executable path: {s}\n", .{exePath});
     const binDirPath = "/usr/bin";
     var binDirW: std.fs.Dir = undefined; //dont judge pls todo fix xd
-    var binDir: std.fs.Dir = try binDirW.openDir(binDirPath, std.fs.Dir.OpenDirOptions{ .iterate = true });
+    var binDir: std.fs.Dir = try binDirW.openDir(binDirPath, std.fs.Dir.OpenDirOptions{
+        .iterate = true,
+    });
     defer binDir.close();
     // std.debug.assert(binDir != undefined);
-    var filesList = std.ArrayList([]const u8).init(PAllocator);
+    var filesList = std.ArrayList([:0]const u8).init(PAllocator);
     defer filesList.deinit();
     _ = try getUserBinaries(binDir, &filesList, PAllocator);
     std.log.info("Size of array: {any}", .{filesList.items.len});
@@ -70,26 +79,32 @@ pub fn main() !void {
     const exePathC = try std.mem.Allocator.dupeZ(PAllocator, u8, exePath);
     defer PAllocator.free(exePathC);
     const exePathTextSize: i32 = rl.measureText(exePathC.ptr, fontSize);
-    var filesListC = std.ArrayList([*:0]const u8).init(PAllocator);
-    for (filesList.items) |fileName| {
-        try filesListC.append(try std.mem.Allocator.dupeZ(PAllocator, u8, fileName));
-        // std.log.warn("string {s}", .{fileName});
-    }
-    std.log.info("Size of Carray: {any}", .{filesListC.items.len});
+    std.log.info("Size of Carray: {any}", .{filesList.items.len});
     while (!rl.windowShouldClose()) {
         rl.beginDrawing();
         defer rl.endDrawing();
         rl.clearBackground(rl.Color.white);
 
-        rl.drawText(exePathC.ptr, @divFloor(Dimentions.width - exePathTextSize, 2), @divTrunc(Dimentions.height, 2), fontSize, rl.Color.black);
+        rl.drawText(
+            exePathC.ptr,
+            @divFloor(Dimentions.width - exePathTextSize, 2),
+            @divTrunc(Dimentions.height, 2),
+            fontSize,
+            rl.Color.black,
+        );
 
         var currentX: f32 = 0;
         var currentY: f32 = 0;
-        for (filesListC.items) |fileName| {
+        for (filesList.items) |fileName| {
             const fileTextSize: i32 = rl.measureText(fileName, fontSize);
             const buttonLabelX: f32 = @floatFromInt(fileTextSize);
             // const buttonLabelShift: f32 = @floatFromInt(index);
-            _ = rg.guiButton(.{ .x = currentX, .y = currentY, .width = buttonLabelX, .height = 40 }, fileName);
+            _ = rg.guiButton(.{
+                .x = currentX,
+                .y = currentY,
+                .width = buttonLabelX,
+                .height = 40,
+            }, fileName);
             // std.log.info("fileName: {s}", .{fileName});
             currentX += buttonLabelX;
             if (currentX > @as(f32, @floatFromInt(Dimentions.width))) {
