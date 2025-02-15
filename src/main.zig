@@ -19,15 +19,18 @@ pub const Dimentions = struct {
 //     }
 // }
 
-pub fn getUserBinaries(binfolder: std.fs.Dir, filesList: *std.ArrayList([]const u8)) anyerror!void {
+pub fn getUserBinaries(binfolder: std.fs.Dir, filesList: *std.ArrayList([]const u8), PAllocator: std.mem.Allocator) anyerror!void {
     var it = binfolder.iterate();
+    const buf2 = try PAllocator.alloc(u8, 4096);
     loop: {
         while (it.next()) |entry| {
             if (entry) |e| {
                 if (e.kind == std.fs.File.Kind.file) {
+                    // TODO: refactor without
                     std.log.info("found file: {s} typeof: {any}\n", .{ e.name, @typeName(@TypeOf(e.name)) });
-                    try filesList.append(e.name);
-                    // try filesList.append(std.unicode.fmtUtf8(e.name).data);
+                    const res = try std.fmt.bufPrint(buf2, "{s}", .{e.name});
+                    try filesList.append(res);
+                    // std.log.debug("len: {any}", .{res.len});
                 }
             } else {
                 break :loop;
@@ -58,19 +61,19 @@ pub fn main() !void {
     // std.debug.assert(binDir != undefined);
     var filesList = std.ArrayList([]const u8).init(PAllocator);
     defer filesList.deinit();
-    _ = try getUserBinaries(binDir, &filesList);
+    _ = try getUserBinaries(binDir, &filesList, PAllocator);
     std.log.info("Size of array: {any}", .{filesList.items.len});
     rl.initWindow(Dimentions.width, Dimentions.height, "title: [*:0]const u8");
     defer rl.closeWindow();
     const fontSize: i32 = 20;
-    rl.setTargetFPS(165);
+    rl.setTargetFPS(15);
     const exePathC = try std.mem.Allocator.dupeZ(PAllocator, u8, exePath);
     defer PAllocator.free(exePathC);
     const exePathTextSize: i32 = rl.measureText(exePathC.ptr, fontSize);
     var filesListC = std.ArrayList([*:0]const u8).init(PAllocator);
     for (filesList.items) |fileName| {
         try filesListC.append(try std.mem.Allocator.dupeZ(PAllocator, u8, fileName));
-        std.log.warn("string {s}", .{fileName});
+        // std.log.warn("string {s}", .{fileName});
     }
     std.log.info("Size of Carray: {any}", .{filesListC.items.len});
     while (!rl.windowShouldClose()) {
