@@ -1,33 +1,105 @@
 const std = @import("std");
 const rl = @import("raylib");
+const rg = @import("raygui");
 
 pub const Dimentions = struct {
     var width: i32 = 800;
     var height: i32 = 600;
 };
 
+// fn isDirectory(path: []const u8) !bool {
+//     const stat = try std.fs.cwd().statFile(path);
+//     switch (stat.kind) {
+//         .directory => {
+//             return true;
+//         },
+//         else => {
+//             return false;
+//         },
+//     }
+// }
+
+pub fn getUserBinaries(binfolder: std.fs.Dir, filesList: *std.ArrayList([]const u8)) anyerror!void {
+    var it = binfolder.iterate();
+    loop: {
+        while (it.next()) |entry| {
+            if (entry) |e| {
+                if (e.kind == std.fs.File.Kind.file) {
+                    std.log.info("found file: {s} typeof: {any}\n", .{ e.name, @typeName(@TypeOf(e.name)) });
+                    try filesList.append(e.name);
+                    // try filesList.append(std.unicode.fmtUtf8(e.name).data);
+                }
+            } else {
+                break :loop;
+            }
+        } else |err| {
+            std.log.err("Error: {any}\n", .{err});
+            break :loop;
+        }
+    }
+}
+
 pub fn main() !void {
+    // var PAllocator_ = std.heap.GeneralPurposeAllocator(.{}){};
+    // const PAllocator = PAllocator_.allocator();
+    // defer {
+    // _ = PAllocator_.deinit();
+    // }
     const PAllocator = std.heap.c_allocator;
     const stdout = std.io.getStdOut().writer();
 
     const exePath = try std.fs.selfExePathAlloc(PAllocator);
     defer PAllocator.free(exePath);
-
     try stdout.print("Executable path: {s}\n", .{exePath});
-
+    const binDirPath = "/usr/bin";
+    var binDirW: std.fs.Dir = undefined; //dont judge pls todo fix xd
+    var binDir: std.fs.Dir = try binDirW.openDir(binDirPath, std.fs.Dir.OpenDirOptions{ .iterate = true });
+    defer binDir.close();
+    // std.debug.assert(binDir != undefined);
+    var filesList = std.ArrayList([]const u8).init(PAllocator);
+    defer filesList.deinit();
+    _ = try getUserBinaries(binDir, &filesList);
+    std.log.info("Size of array: {any}", .{filesList.items.len});
     rl.initWindow(Dimentions.width, Dimentions.height, "title: [*:0]const u8");
     defer rl.closeWindow();
     const fontSize: i32 = 20;
     rl.setTargetFPS(165);
     const exePathC = try std.mem.Allocator.dupeZ(PAllocator, u8, exePath);
     defer PAllocator.free(exePathC);
-    const textSize: i32 = rl.measureText(exePathC.ptr, fontSize);
+    const exePathTextSize: i32 = rl.measureText(exePathC.ptr, fontSize);
+    var filesListC = std.ArrayList([*:0]const u8).init(PAllocator);
+    for (filesList.items) |fileName| {
+        try filesListC.append(try std.mem.Allocator.dupeZ(PAllocator, u8, fileName));
+        std.log.warn("string {s}", .{fileName});
+    }
+    std.log.info("Size of Carray: {any}", .{filesListC.items.len});
     while (!rl.windowShouldClose()) {
         rl.beginDrawing();
+        defer rl.endDrawing();
         rl.clearBackground(rl.Color.white);
 
-        rl.drawText(exePathC.ptr, @divFloor(Dimentions.width - textSize, 2), @divTrunc(Dimentions.height, 2), fontSize, rl.Color.black);
+        rl.drawText(exePathC.ptr, @divFloor(Dimentions.width - exePathTextSize, 2), @divTrunc(Dimentions.height, 2), fontSize, rl.Color.black);
 
-        rl.endDrawing();
+        var currentX: f32 = 0;
+        var currentY: f32 = 0;
+        for (filesListC.items) |fileName| {
+            const fileTextSize: i32 = rl.measureText(fileName, fontSize);
+            const buttonLabelX: f32 = @floatFromInt(fileTextSize);
+            // const buttonLabelShift: f32 = @floatFromInt(index);
+            _ = rg.guiButton(.{ .x = currentX, .y = currentY, .width = buttonLabelX, .height = 40 }, fileName);
+            // std.log.info("fileName: {s}", .{fileName});
+            currentX += buttonLabelX;
+            if (currentX > @as(f32, @floatFromInt(Dimentions.width))) {
+                currentY += 40;
+                currentX = 0;
+            }
+            if (currentY > @as(f32, @floatFromInt(Dimentions.height))) {
+                break;
+            }
+        }
     }
+    //TODO: FIX leaks
+    // for (filesListC.items) |fileName| {
+    //     PAllocator.free(filesListC);
+    // }
 }
