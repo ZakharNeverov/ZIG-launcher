@@ -74,8 +74,10 @@ pub fn main() !void {
     std.log.info("Size of array: {any}", .{filesList.items.len});
     rl.initWindow(Dimentions.width, Dimentions.height, "title: [*:0]const u8");
     defer rl.closeWindow();
+    const refreshRate = rl.getMonitorRefreshRate(rl.getCurrentMonitor());
+    std.log.debug("refreshRate: {any}", .{refreshRate});
     const fontSize: i32 = 20;
-    rl.setTargetFPS(15);
+    rl.setTargetFPS(if (refreshRate != 0) refreshRate else 60);
     const exePathC = try std.mem.Allocator.dupeZ(PAllocator, u8, exePath);
     defer PAllocator.free(exePathC);
     const exePathTextSize: i32 = rl.measureText(exePathC.ptr, fontSize);
