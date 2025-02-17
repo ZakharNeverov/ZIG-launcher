@@ -3,164 +3,242 @@ const rl = @import("raylib");
 const rg = @import("raygui");
 
 pub const Dimentions = struct {
-    var width: i32 = 1920;
-    var height: i32 = 1080;
+    var width: i32 = 800;
+    var height: i32 = 600;
 };
 
-// fn isDirectory(path: []const u8) !bool {
-//     const stat = try std.fs.cwd().statFile(path);
-//     switch (stat.kind) {
-//         .directory => {
-//             return true;
-//         },
-//         else => {
-//             return false;
-//         },
-//     }
-// }
+pub const DropdownMeta = struct {
+    cstr: [:0]const u8,
+    maxLen: usize,
+};
 
-fn getUserBinFolders(paths: *std.ArrayList([]const u8)) !void {
-    var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
-    defer arena.deinit();
-    const allocator = arena.allocator();
-    const path = "PATH";
-    const db_path = std.process.getEnvVarOwned(allocator, path) catch |err| blk: {
-        switch (err) {
-            error.EnvironmentVariableNotFound => break :blk "/path",
-            else => return err,
-        }
-    };
-    std.debug.print("-----------------------------------", .{});
-    std.debug.print("path: {any}\n", .{db_path});
-    var it = std.mem.split(u8, db_path, ":");
-    while (it.next()) |x| {
-        std.debug.print("{s}\n", .{x});
-        try paths.append(x);
+const FolderFiles = struct {
+    folder: []const u8,
+    files: std.ArrayList([]const u8),
+};
+
+fn getUserBinFolders(allocator: std.mem.Allocator) !std.ArrayList([]const u8) {
+    // Get the environment variable string
+    const envPathOwned = try std.process.getEnvVarOwned(allocator, "PATH");
+    var folders = std.ArrayList([]const u8).init(allocator);
+    var it = std.mem.split(u8, envPathOwned, ":");
+    while (it.next()) |folder| {
+        // Duplicate the folder slice so its lifetime is independent
+        const folderDup = try dupeSlice(allocator, folder);
+        try folders.append(folderDup);
     }
-    std.debug.print("-----------------------------------", .{});
+    // Free the original env var buffer now that we have our own copies.
+    allocator.free(envPathOwned);
+    return folders;
 }
 
-pub fn getUserBinaries(
-    binfolder: std.fs.Dir,
-    filesList: *std.ArrayList([:0]const u8),
-    PAllocator: std.mem.Allocator,
-) anyerror!void {
-    var it = binfolder.iterate();
-    loop: {
-        while (it.next()) |entry| {
-            if (entry) |e| {
-                if (e.kind == std.fs.File.Kind.file) {
-                    // TODO: refactor without
-                    // std.log.info("found file: {s} typeof: {any}\n", .{
-                    // e.name,
-                    // @typeName(@TypeOf(e.name)),
-                    // });
-                    const buf2 = try PAllocator.alloc(u8, 4096);
-                    const res = try std.fmt.bufPrintZ(buf2, "{s}", .{e.name});
-                    try filesList.append(res);
-                    // std.log.debug("len: {any}", .{res.len});
-                }
-            } else {
-                break :loop;
-            }
-        } else |err| {
-            std.log.err("Error: {any}\n", .{err});
-            break :loop;
+fn dupeSlice(allocator: std.mem.Allocator, s: []const u8) ![]u8 {
+    const dup = try allocator.alloc(u8, s.len);
+    std.mem.copyForwards(u8, dup, s);
+    return dup;
+}
+
+fn getUserBinaries(dirPath: []const u8, allocator: std.mem.Allocator) !std.ArrayList([]const u8) {
+    var dir = try std.fs.cwd().openDir(dirPath, .{ .iterate = true });
+    defer dir.close();
+
+    var walker = try dir.walk(allocator);
+    var filesList = std.ArrayList([]const u8).init(allocator);
+    while (true) {
+        const maybeEntry = try walker.next();
+        if (maybeEntry == null) break;
+        const entry = maybeEntry.?;
+        if (entry.kind == .file) {
+            // Duplicate the file path
+            const dupPath = try dupeSlice(allocator, entry.path);
+            try filesList.append(dupPath);
         }
     }
+    return filesList;
+}
+
+fn getAllBinaries(allocator: std.mem.Allocator, folders: std.ArrayList([]const u8)) !std.ArrayList(FolderFiles) {
+    var folderFilesList = std.ArrayList(FolderFiles).init(allocator);
+    for (folders.items) |folder| {
+        const filesList = try getUserBinaries(folder, allocator);
+        try folderFilesList.append(.{
+            .folder = folder,
+            .files = filesList,
+        });
+    }
+    return folderFilesList;
+}
+
+fn constructDropdown(
+    arrayItems: [][]const u8,
+    allocator: std.mem.Allocator,
+    separator: []const u8,
+    prefix: []const u8,
+) !DropdownMeta {
+    if (arrayItems.len == 0) {
+        const empty: [:0]const u8 = "0";
+        return .{
+            .cstr = empty,
+            .maxLen = 0,
+        };
+    }
+    var totalLen: usize = 0;
+    var maxLen: usize = 0;
+    for (arrayItems) |s| {
+        totalLen += s.len + prefix.len;
+    }
+    if (arrayItems.len > 1) {
+        totalLen += separator.len * (arrayItems.len - 1);
+    }
+    var buffer = try allocator.alloc(u8, totalLen + 1);
+
+    var currentPos: usize = 0;
+    for (arrayItems, 0..arrayItems.len) |s, index| {
+        std.mem.copyForwards(u8, buffer[currentPos .. currentPos + prefix.len], prefix);
+        currentPos += prefix.len;
+        std.mem.copyForwards(u8, buffer[currentPos .. currentPos + s.len], s);
+        currentPos += s.len;
+        if (index < arrayItems.len - 1) {
+            std.mem.copyForwards(u8, buffer[currentPos .. currentPos + separator.len], separator);
+            currentPos += separator.len;
+        }
+        if (s.len > maxLen) maxLen = s.len;
+    }
+    buffer[totalLen] = 0;
+
+    return .{
+        .cstr = std.mem.span(@as([*:0]const u8, @ptrCast(buffer))),
+        .maxLen = maxLen,
+    };
+}
+
+fn toCStr(allocator: std.mem.Allocator, s: []const u8) ![:0]const u8 {
+    var buffer = try allocator.alloc(u8, s.len + 1);
+    std.mem.copyForwards(u8, buffer, s);
+    buffer[s.len] = 0;
+    return std.mem.span(@as([*:0]const u8, @ptrCast(buffer)));
 }
 
 pub fn main() !void {
-    // var PAllocator_ = std.heap.GeneralPurposeAllocator(.{}){};
-    // const PAllocator = PAllocator_.allocator();
-    // defer {
-    // _ = PAllocator_.deinit();
-    // }
-    const PAllocator = std.heap.c_allocator;
+    const allocator = std.heap.page_allocator;
     const stdout = std.io.getStdOut().writer();
 
-    const exePath = try std.fs.selfExePathAlloc(PAllocator);
-    defer PAllocator.free(exePath);
+    const exePath = try std.fs.selfExePathAlloc(allocator);
+    defer allocator.free(exePath);
     try stdout.print("Executable path: {s}\n", .{exePath});
-    var binDirPaths = std.ArrayList([]const u8).init(PAllocator);
-    errdefer binDirPaths.deinit();
-    try getUserBinFolders(&binDirPaths);
-    std.log.debug("Bin dirs count: {d}", .{binDirPaths.items.len});
 
-    // var DirToFiles = std.StringHashMap(std.ArrayList([:0]const u8)).init(PAllocator);
-    // var it = binDirPaths
-    for (binDirPaths.items) |DirectoryPath| {
-        var binDirW: std.fs.Dir = undefined; //dont judge pls todo fix xd
-        var binDir: std.fs.Dir = try binDirW.openDir(DirectoryPath, std.fs.Dir.OpenDirOptions{
-            .iterate = true,
-        });
-        defer binDir.close();
-        // std.debug.assert(binDir != undefined);
-        var filesList = std.ArrayList([:0]const u8).init(PAllocator);
-        defer filesList.deinit();
-        _ = try getUserBinaries(binDir, &filesList, PAllocator);
-        std.log.info("Size of array: {any}", .{filesList.items.len});
+    var binFolders = try getUserBinFolders(allocator);
+    // (later we will free each folder string)
+
+    std.debug.print("-----------------------------------\n", .{});
+    std.debug.print("Found {d} bin folders:\n", .{binFolders.items.len});
+    for (binFolders.items) |folder| {
+        std.debug.print(" - {s}\n", .{folder});
+    }
+    std.debug.print("type of binfolder items: {s}\n", .{@typeName(@TypeOf(binFolders.items))});
+    std.debug.print("-----------------------------------\n", .{});
+
+    rl.initWindow(Dimentions.width, Dimentions.height, "title: [*:0]const u8");
+    defer rl.closeWindow();
+    const refreshRate = rl.getMonitorRefreshRate(rl.getCurrentMonitor());
+    std.log.debug("refreshRate: {any}", .{refreshRate});
+    rl.setTargetFPS(if (refreshRate != 0) refreshRate else 60);
+
+    const fontSize = 10;
+
+    var dropDownActive: i32 = 0;
+    var dropDownEditMode: bool = false;
+    var SliderValue: f32 = 0;
+
+    var buttonWidth: f32 = 16;
+    var buttonHeight: f32 = 9;
+    const buttonSizeMult = 5;
+    buttonWidth *= buttonSizeMult;
+    buttonHeight *= buttonSizeMult;
+
+    const dropDownString: DropdownMeta = try constructDropdown(binFolders.items, allocator, ";", "#01#");
+    // We'll use dropDownString.cstr for the dropdown, then free it later.
+    const secondBlockX: f32 = @as(f32, @floatFromInt(dropDownString.maxLen)) * fontSize;
+    std.debug.print("constructed cstr {s} type of {s} maxLen {}\n", .{
+        dropDownString.cstr,
+        @typeName(@TypeOf(dropDownString)),
+        dropDownString.maxLen,
+    });
+    const folderFilesList = try getAllBinaries(allocator, binFolders);
+
+    // Initially select the first folder's file list.
+    var selectedFolderFiles = folderFilesList.items[@intCast(0)];
+    var files = selectedFolderFiles.files.items;
+    std.log.debug("selected Folder {s}, items in directory: {}", .{ selectedFolderFiles.folder, files.len });
+
+    while (!rl.windowShouldClose()) {
+        rl.beginDrawing();
+        defer rl.endDrawing();
+        rl.clearBackground(rl.Color.white);
+        if (dropDownEditMode) rg.guiLock();
+        rg.guiUnlock();
+        if (rg.guiDropdownBox(.{
+            .x = 0,
+            .y = 0,
+            .width = secondBlockX,
+            .height = 40.0,
+        }, dropDownString.cstr, &dropDownActive, dropDownEditMode) != 0) {
+            dropDownEditMode = !dropDownEditMode;
+            selectedFolderFiles = folderFilesList.items[@intCast(dropDownActive)];
+            files = selectedFolderFiles.files.items;
+            std.log.debug("selected Folder {s}, items in directory: {}", .{ selectedFolderFiles.folder, files.len });
+        }
+        _ = rg.guiSlider(.{
+            .x = secondBlockX,
+            .y = 0,
+            .width = @as(f32, @floatFromInt(rl.getScreenWidth())),
+            .height = 40,
+        }, "", "", &SliderValue, 0, 100);
+        _ = rg.guiPanel(.{
+            .x = secondBlockX,
+            .y = 40,
+            .width = @as(f32, @floatFromInt(rl.getScreenWidth())) - 20,
+            .height = @as(f32, @floatFromInt(rl.getScreenHeight())) - 20,
+        }, "files");
+        var currentX: f32 = secondBlockX;
+        var currentY: f32 = 75;
+        for (files) |file| {
+            if (currentY > @as(f32, @floatFromInt(rl.getScreenHeight()))) break;
+            // Convert to C-string for the GUI button.
+            const cFilename = try toCStr(allocator, file);
+            _ = rg.guiButton(.{
+                .x = currentX,
+                .y = currentY,
+                .width = buttonWidth,
+                .height = buttonHeight,
+            }, cFilename);
+            // Free the temporary C-string immediately after use.
+            allocator.free(cFilename);
+            if (currentX + buttonWidth > @as(f32, @floatFromInt(rl.getScreenWidth())) - 20) {
+                currentX = secondBlockX;
+                currentY += buttonHeight;
+            } else {
+                currentX += buttonWidth;
+            }
+        }
+        rl.drawFPS(10, 10);
     }
 
-    // var binDirW: std.fs.Dir = undefined; //dont judge pls todo fix xd
-    // var binDir: std.fs.Dir = try binDirW.openDir(binDirPath, std.fs.Dir.OpenDirOptions{
-    //     .iterate = true,
-    // });
-    // defer binDir.close();
-    // // std.debug.assert(binDir != undefined);
-    // var filesList = std.ArrayList([:0]const u8).init(PAllocator);
-    // defer filesList.deinit();
-    // _ = try getUserBinaries(binDir, &filesList, PAllocator);
-    // std.log.info("Size of array: {any}", .{filesList.items.len});
-    // rl.initWindow(Dimentions.width, Dimentions.height, "title: [*:0]const u8");
-    // defer rl.closeWindow();
-    // const refreshRate = rl.getMonitorRefreshRate(rl.getCurrentMonitor());
-    // std.log.debug("refreshRate: {any}", .{refreshRate});
+    // Free memory allocated for dropDownString.
+    allocator.free(dropDownString.cstr);
 
-    // const fontSize: i32 = 20;
-    // rl.setTargetFPS(if (refreshRate != 0) refreshRate else 60);
-    // const exePathC = try std.mem.Allocator.dupeZ(PAllocator, u8, exePath);
-    // defer PAllocator.free(exePathC);
-    // const exePathTextSize: i32 = rl.measureText(exePathC.ptr, fontSize);
-    // std.log.info("Size of Carray: {any}", .{filesList.items.len});
-    // while (!rl.windowShouldClose()) {
-    //     rl.beginDrawing();
-    //     defer rl.endDrawing();
-    //     rl.clearBackground(rl.Color.white);
+    // Free folderFilesList and all file strings it owns.
+    for (folderFilesList.items) |folderFiles| {
+        for (folderFiles.files.items) |dupName| {
+            allocator.free(dupName);
+        }
+        folderFiles.files.deinit();
+    }
+    folderFilesList.deinit();
 
-    //     rl.drawText(
-    //         exePathC.ptr,
-    //         @divFloor(Dimentions.width - exePathTextSize, 2),
-    //         @divTrunc(Dimentions.height, 2),
-    //         fontSize,
-    //         rl.Color.black,
-    //     );
-
-    //     var currentX: f32 = 0;
-    //     var currentY: f32 = 0;
-    //     for (filesList.items) |fileName| {
-    //         const fileTextSize: i32 = rl.measureText(fileName, fontSize);
-    //         const buttonLabelX: f32 = @floatFromInt(fileTextSize);
-    //         // const buttonLabelShift: f32 = @floatFromInt(index);
-    //         _ = rg.guiButton(.{
-    //             .x = currentX,
-    //             .y = currentY,
-    //             .width = buttonLabelX,
-    //             .height = 40,
-    //         }, fileName);
-    //         // std.log.info("fileName: {s}", .{fileName});
-    //         currentX += buttonLabelX;
-    //         if (currentX > @as(f32, @floatFromInt(Dimentions.width))) {
-    //             currentY += 40;
-    //             currentX = 0;
-    //         }
-    //         if (currentY > @as(f32, @floatFromInt(Dimentions.height))) {
-    //             break;
-    //         }
-    //     }
-    // }
-    // //TODO: FIX leaks
-    // for (filesListC.items) |fileName| {
-    //     PAllocator.free(filesListC);
-    // }
+    // Free the binFolders list and its items.
+    for (binFolders.items) |folder| {
+        allocator.free(folder);
+    }
+    binFolders.deinit();
 }
